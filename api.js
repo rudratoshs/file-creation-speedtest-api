@@ -1,26 +1,25 @@
 const express = require('express');
-const aws = require('aws-sdk');
+const fs = require('fs');
+const path = require('path');
 const cors = require('cors');
 require('dotenv').config();
 
-// AWS S3 configuration
-const s3 = new aws.S3({
-    accessKeyId: process.env.LEARNING_AWS_ACCESS_KEY_ID,
-    secretAccessKey: process.env.LEARNING_AWS_SECRET_ACCESS_KEY,
-    region: process.env.LEARNING_AWS_REGION
-});
-
-const BUCKET_NAME = process.env.LEARNING_S3_BUCKET_NAME;
-console.log('Using S3 Bucket:', BUCKET_NAME); // Added log for the bucket name
 const app = express();
 const MAX_FILE_SIZE_BYTES = 1 * 1024 * 1024 * 1024; // 1 GB
+const FILES_DIR = path.join(__dirname, 'files'); // Local folder to store files
+
+// Ensure the 'files' directory exists
+if (!fs.existsSync(FILES_DIR)) {
+    fs.mkdirSync(FILES_DIR);
+}
 
 // Enable CORS for all routes
 app.use(cors());
 
-// Middleware to check if the requested file exists in S3 and serve or create it
+// Middleware to check if the requested file exists locally and serve or create it
 app.get('/files/:fileName', async (req, res) => {
     const fileName = req.params.fileName;
+    const filePath = path.join(FILES_DIR, fileName);
     const fileSizeKB = parseInt(fileName.replace('KB.bin', '')); // Extract size from filename
 
     // Check if the file size exceeds 1 GB
@@ -29,72 +28,40 @@ app.get('/files/:fileName', async (req, res) => {
     }
 
     try {
-        // Check if file already exists in S3
-        await s3.headObject({
-            Bucket: BUCKET_NAME,
-            Key: fileName
-        }).promise();
-
-        // File exists, so generate a signed URL for download
-        const url = s3.getSignedUrl('getObject', {
-            Bucket: BUCKET_NAME,
-            Key: fileName,
-            Expires: 60 // URL valid for 60 seconds
-        });
-        return res.redirect(url);
-    } catch (err) {
-        if (err.code === 'NotFound') {
+        if (fs.existsSync(filePath)) {
+            // File exists, serve it as a download
+            return res.download(filePath);
+        } else {
             // File doesn't exist, so create it
             const fileSizeBytes = fileSizeKB * 1024;
             const buffer = Buffer.alloc(fileSizeBytes); // Create a buffer with the specified size
 
-            // Upload the file to S3 without ACL
-            const params = {
-                Bucket: BUCKET_NAME,
-                Key: fileName,
-                Body: buffer,
-                ContentType: 'application/octet-stream'
-                // Removed the ACL property
-            };
+            // Write the buffer to the local file system
+            fs.writeFileSync(filePath, buffer);
 
-            await s3.upload(params).promise();
+            console.log(`Created and saved file: ${fileName} (${fileSizeKB} KB)`);
 
-            console.log(`Created and uploaded file: ${fileName} (${fileSizeKB} KB)`);
-
-            // Generate a signed URL for the newly created file
-            const url = s3.getSignedUrl('getObject', {
-                Bucket: BUCKET_NAME,
-                Key: fileName,
-                Expires: 60
-            });
-
-            return res.redirect(url);
-        } else {
-            console.error('Error fetching file from S3:', err);
-            return res.status(500).send('Error fetching file from S3.');
+            // Serve the newly created file
+            return res.download(filePath);
         }
+    } catch (err) {
+        console.error('Error fetching or creating file:', err);
+        return res.status(500).send('Error fetching or creating file.');
     }
 });
 
-// Route to list all available files in the S3 bucket
-app.get('/files', async (req, res) => {
+// Route to list all available files in the local 'files' directory
+app.get('/files', (req, res) => {
     try {
-        const data = await s3.listObjectsV2({
-            Bucket: BUCKET_NAME
-        }).promise();
+        const files = fs.readdirSync(FILES_DIR);
 
-        if (!data.Contents.length) {
+        if (!files.length) {
             return res.status(404).send('No files found.');
         }
 
         // Generate links for each file
-        let fileLinks = data.Contents.map(file => {
-            const url = s3.getSignedUrl('getObject', {
-                Bucket: BUCKET_NAME,
-                Key: file.Key,
-                Expires: 60
-            });
-            return `<li><a href="${url}" download>${file.Key}</a></li>`;
+        let fileLinks = files.map(file => {
+            return `<li><a href="/files/${file}" download>${file}</a></li>`;
         }).join('');
 
         res.send(`
@@ -104,8 +71,8 @@ app.get('/files', async (req, res) => {
             </ul>
         `);
     } catch (err) {
-        console.error('Error listing files in S3:', err);
-        return res.status(500).send('Error listing files in S3.');
+        console.error('Error listing files:', err);
+        return res.status(500).send('Error listing files.');
     }
 });
 
