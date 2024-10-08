@@ -16,6 +16,14 @@ if (!fs.existsSync(FILES_DIR)) {
 // Enable CORS for all routes
 app.use(cors());
 
+// Middleware to disable caching
+app.use((req, res, next) => {
+    res.set('Cache-Control', 'no-store');
+    res.set('Pragma', 'no-cache');
+    res.set('Expires', '0'); // Date in the past
+    next();
+});
+
 // Middleware to check if the requested file exists locally and serve or create it
 app.get('/files/:fileName', async (req, res) => {
     const fileName = req.params.fileName;
@@ -77,7 +85,7 @@ app.get('/files', (req, res) => {
 });
 
 // Start the server
-const PORT = process.env.PORT || 8080;
+const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`Server is running on http://localhost:${PORT}`);
 });
